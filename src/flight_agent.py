@@ -71,7 +71,7 @@ def main():
             "source": "Google Flights via SerpApi"
         })
 
-    # Reject itineraries with more than one stop or a layover over the configured limit.\n    filtered = []\n    for row in rows:\n        try:\n            if int(row["stops"]) > CFG["stops"]:\n                continue\n        except (ValueError, TypeError):\n            pass\n        if row["max_layover_minutes"] > CFG.get("max_layover_hours", 5) * 60:\n            continue\n        filtered.append(row)\n    rows = filtered\n\n    if not rows:
+    # SerpApi Google Flights Deals uses stops=2 for "one stop or fewer".\n    # Layover duration is not reliably exposed by the Deals endpoint, so do not\n    # discard results based on a missing layover value. Detailed filtering will\n    # be added when we resolve candidate itineraries through Google Flights.\n    if not rows:
         print("No priced results. API keys:", sorted(data.keys()))
         return
 
