@@ -25,12 +25,7 @@ def daterange(start, end):
 
 
 def choose_dates(today):
-    """Pick one outbound date and one return date for this run.
-
-    The selection rotates deterministically through the full outbound window.
-    The return date is 7 nights after the outbound date, so consecutive runs
-    build a useful history of 6-8 night combinations as the rotation advances.
-    """
+    """Pick one outbound date and one 6-8 night return date for this run."""
     start = date.fromisoformat(CFG["outbound_start"])
     end = date.fromisoformat(CFG["outbound_end"])
     dates = list(daterange(start, end))
@@ -40,7 +35,10 @@ def choose_dates(today):
 
     index = (today - start).days % len(dates)
     outbound = dates[index]
-    return outbound, outbound + timedelta(days=CFG["trip_length_min"] + 1)
+
+    stay_span = CFG["trip_length_max"] - CFG["trip_length_min"] + 1
+    nights = CFG["trip_length_min"] + ((today - start).days % stay_span)
+    return outbound, outbound + timedelta(days=nights)
 
 
 def request_flights(key, departure_id, arrival_id, outbound_date):
@@ -194,21 +192,16 @@ def append_rows(rows):
         old_rows = []
         if CSV.exists() and CSV.stat().st_size > 0:
             with CSV.open("r", encoding="utf-8", newline="") as f:
-                reader = csv.DictReader(f)
-                old_rows = list(reader)
+                old_rows = list(csv.DictReader(f))
 
         with CSV.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
             writer.writerows(
-                {
-                    field: row.get(field, "")
-                    for field in fields
-                }
+                {field: row.get(field, "") for field in fields}
                 for row in old_rows
                 if "direction" in row
             )
-        existing_header = fields
 
     with CSV.open("a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -263,6 +256,7 @@ def build_xlsx():
     summary = wb.create_sheet("Souhrn")
     summary.append(["Položka", "Hodnota"])
     summary.append(["Počet uložených letů", len(all_rows)])
+
     if all_rows:
         prices = [int(row["price_czk"]) for row in all_rows if row.get("price_czk")]
         summary.append(["Nejnižší zaznamenaná cena (Kč)", min(prices)])
@@ -294,7 +288,8 @@ def main():
     outbound_date, return_date = choose_dates(today)
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-    print(f"Rotation date: {outbound_date}")
+    print(f"Rotation outbound date: {outbound_date}")
+    print(f"Rotation stay length: {(return_date - outbound_date).days} nights")
     print(f"Return-side date: {return_date}")
     print("Searching outbound: all departure airports -> all NYC airports")
     print("Searching return: all NYC airports -> all departure airports")
