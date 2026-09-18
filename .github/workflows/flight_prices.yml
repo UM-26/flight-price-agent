@@ -17,6 +17,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      - name: Smoke test Google Flights
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+        run: python src/test_google_flights.py
       - name: Check flight prices
         env:
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
