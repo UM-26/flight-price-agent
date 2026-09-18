@@ -45,6 +45,17 @@ def main():
             continue
         out = item.get("outbound") or {}
         ret = item.get("return") or {}
+        segments = []
+        for part in (out.get("flights") or []) + (ret.get("flights") or []):
+            if isinstance(part, dict): segments.append(part)
+        layovers = item.get("layovers") or out.get("layovers") or []
+        max_layover = 0
+        for lay in layovers:
+            if isinstance(lay, dict):
+                mins = lay.get("duration") or lay.get("duration_minutes") or 0
+                try: max_layover = max(max_layover, int(mins))
+                except (ValueError, TypeError): pass
+        stops = item.get("number_of_stops", item.get("stops", ""))
         rows.append({
             "checked_at_utc": now,
             "price_czk": int(price),
@@ -53,12 +64,14 @@ def main():
             "airline": item.get("airline", ""),
             "outbound_date": item.get("outbound_date") or out.get("date", ""),
             "return_date": item.get("return_date") or ret.get("date", ""),
-            "stops": item.get("number_of_stops", item.get("stops", "")),
+            "stops": stops,
+            "max_layover_minutes": max_layover,
+            "max_layover": f"{max_layover // 60}:{max_layover % 60:02d}" if max_layover else "0:00",
             "duration_minutes": item.get("duration", item.get("flight_duration", "")),
             "source": "Google Flights via SerpApi"
         })
 
-    if not rows:
+    # Reject itineraries with more than one stop or a layover over the configured limit.\n    filtered = []\n    for row in rows:\n        try:\n            if int(row["stops"]) > CFG["stops"]:\n                continue\n        except (ValueError, TypeError):\n            pass\n        if row["max_layover_minutes"] > CFG.get("max_layover_hours", 5) * 60:\n            continue\n        filtered.append(row)\n    rows = filtered\n\n    if not rows:
         print("No priced results. API keys:", sorted(data.keys()))
         return
 
