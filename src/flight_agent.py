@@ -72,7 +72,9 @@ def main():
         })
 
     # SerpApi Google Flights Deals uses stops=2 for "one stop or fewer".\n    # Layover duration is not reliably exposed by the Deals endpoint, so do not\n    # discard results based on a missing layover value. Detailed filtering will\n    # be added when we resolve candidate itineraries through Google Flights.\n    if not rows:
-        print("No priced results. API keys:", sorted(data.keys()))
+        print("No usable priced itineraries were returned by the API.")
+        print("API response keys:", sorted(data.keys()))
+        print("Raw result counts:", {k: len(v) for k, v in data.items() if isinstance(v, list)})
         return
 
     rows.sort(key=lambda x: x["price_czk"])
