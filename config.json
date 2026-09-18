@@ -1,8 +1,8 @@
 {
-  "departure_airports": ["PRG", "VIE", "KTW"],
+  "departure_airports": ["PRG", "VIE", "KTW", "BTS", "KRK"],
   "arrival_airports": ["JFK", "EWR", "LGA"],
-  "outbound_start": "2027-05-01",
-  "outbound_end": "2027-05-31",
+  "outbound_start": "2027-04-01",
+  "outbound_end": "2027-06-30",
   "trip_length_min": 7,
   "trip_length_max": 14,
   "adults": 2,
@@ -12,6 +12,6 @@
   "language": "cs",
   "country": "cz",
   "stops": 0,
-  "max_results": 20,
+  "max_results": 50,
   "alert_price_czk": 12000
 }
