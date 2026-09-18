@@ -10,105 +10,179 @@ CSV = ROOT / "data" / "prices.csv"
 XLSX = ROOT / "data" / "flight_prices.xlsx"
 API = "https://serpapi.com/search.json"
 
+
+def parse_date(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
 def main():
     key = os.environ.get("SERPAPI_KEY")
     if not key:
         raise RuntimeError("SERPAPI_KEY is not set")
+
+    # Deals API supports flexible outbound dates and a natural-language
+    # destination query. We filter the returned deals to JFK/EWR/LGA below.
     params = {
         "engine": "google_flights_deals",
         "api_key": key,
         "departure_id": ",".join(CFG["departure_airports"]),
-        "arrival_id": ",".join(CFG["arrival_airports"]),
+        "query": "New York",
         "outbound_date": f'{CFG["outbound_start"]},{CFG["outbound_end"]}',
-        "trip_length": f'{CFG["trip_length_min"]},{CFG["trip_length_max"]}',
         "type": "1",
-        "adults": CFG["adults"], "children": CFG["children"],
-        "travel_class": "1", "currency": CFG["currency"],
-        "hl": CFG["language"], "gl": CFG["country"], "stops": CFG["stops"]
+        "adults": CFG["adults"],
+        "children": CFG["children"],
+        "infants_on_lap": CFG.get("infants_on_lap", 0),
+        "travel_class": "1",
+        "currency": CFG["currency"],
+        "hl": CFG["language"],
+        "gl": CFG["country"],
+        "stops": CFG["stops"],
     }
+
     r = requests.get(API, params=params, timeout=60)
     r.raise_for_status()
     data = r.json()
+
     if data.get("error"):
         raise RuntimeError(data["error"])
 
-    items = []
-    for key_name in ("best_flights", "other_flights", "flights", "deals"):
-        if isinstance(data.get(key_name), list):
-            items.extend(data[key_name])
+    deals = data.get("deals")
+    if not isinstance(deals, list):
+        deals = []
+
+    target_airports = set(CFG["arrival_airports"])
+    min_days = CFG["trip_length_min"]
+    max_days = CFG["trip_length_max"]
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     rows = []
-    for item in items:
-        price = item.get("price")
+
+    for deal in deals:
+        if not isinstance(deal, dict):
+            continue
+
+        price = deal.get("price")
         if not isinstance(price, (int, float)):
             continue
-        out = item.get("outbound") or {}
-        ret = item.get("return") or {}
-        segments = []
-        for part in (out.get("flights") or []) + (ret.get("flights") or []):
-            if isinstance(part, dict): segments.append(part)
-        layovers = item.get("layovers") or out.get("layovers") or []
-        max_layover = 0
-        for lay in layovers:
-            if isinstance(lay, dict):
-                mins = lay.get("duration") or lay.get("duration_minutes") or 0
-                try: max_layover = max(max_layover, int(mins))
-                except (ValueError, TypeError): pass
-        stops = item.get("number_of_stops", item.get("stops", ""))
+
+        origin = deal.get("departure_airport_code", "")
+        destination = deal.get("arrival_airport_code", "")
+
+        if origin not in CFG["departure_airports"]:
+            continue
+        if destination not in target_airports:
+            continue
+
+        outbound_date = deal.get("start_date", "")
+        return_date = deal.get("end_date", "")
+        out_day = parse_date(outbound_date)
+        ret_day = parse_date(return_date)
+
+        if not out_day or not ret_day:
+            continue
+
+        trip_days = (ret_day - out_day).days
+        if not (min_days <= trip_days <= max_days):
+            continue
+
+        stops = deal.get("stops", "")
+        try:
+            stops_value = int(stops)
+        except (ValueError, TypeError):
+            stops_value = ""
+
+        if isinstance(stops_value, int) and stops_value > 1:
+            continue
+
         rows.append({
             "checked_at_utc": now,
             "price_czk": int(price),
-            "origin": item.get("departure_airport", {}).get("id") or out.get("departure_airport", {}).get("id", ""),
-            "destination": item.get("arrival_airport", {}).get("id") or out.get("arrival_airport", {}).get("id", ""),
-            "airline": item.get("airline", ""),
-            "outbound_date": item.get("outbound_date") or out.get("date", ""),
-            "return_date": item.get("return_date") or ret.get("date", ""),
-            "stops": stops,
-            "max_layover_minutes": max_layover,
-            "max_layover": f"{max_layover // 60}:{max_layover % 60:02d}" if max_layover else "0:00",
-            "duration_minutes": item.get("duration", item.get("flight_duration", "")),
-            "source": "Google Flights via SerpApi"
+            "origin": origin,
+            "destination": destination,
+            "airline": deal.get("airline", ""),
+            "outbound_date": outbound_date,
+            "return_date": return_date,
+            "stops": stops_value,
+            "max_layover_minutes": "",
+            "max_layover": "",
+            "duration_minutes": deal.get("flight_duration", ""),
+            "source": "Google Flights via SerpApi",
         })
 
-    # SerpApi Google Flights Deals uses stops=2 for "one stop or fewer".\n    # Layover duration is not reliably exposed by the Deals endpoint, so do not\n    # discard results based on a missing layover value. Detailed filtering will\n    # be added when we resolve candidate itineraries through Google Flights.\n    if not rows:
-        print("No usable priced itineraries were returned by the API.")
+    if not rows:
+        print("API call succeeded, but no matching NYC itinerary was returned.")
         print("API response keys:", sorted(data.keys()))
-        print("Raw result counts:", {k: len(v) for k, v in data.items() if isinstance(v, list)})
+        print("Number of deals returned:", len(deals))
+        if deals:
+            sample = deals[0]
+            print("First deal sample:", {
+                k: sample.get(k)
+                for k in (
+                    "name", "price", "start_date", "end_date",
+                    "departure_airport_code", "arrival_airport_code",
+                    "stops", "airline",
+                )
+            })
         return
 
     rows.sort(key=lambda x: x["price_czk"])
     rows = rows[:CFG.get("max_results", 20)]
+
     CSV.parent.mkdir(parents=True, exist_ok=True)
     fields = list(rows[0].keys())
     exists = CSV.exists()
+
     with CSV.open("a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        if not exists: w.writeheader()
-        w.writerows(rows)
+        writer = csv.DictWriter(f, fieldnames=fields)
+        if not exists:
+            writer.writeheader()
+        writer.writerows(rows)
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Historie cen"
     ws.append(fields)
+
     with CSV.open("r", encoding="utf-8", newline="") as f:
         for row in csv.DictReader(f):
-            ws.append([row.get(x, "") for x in fields])
+            ws.append([row.get(field, "") for field in fields])
+
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
-    for i, width in enumerate([24,14,10,12,22,14,14,10,18,28], 1):
-        ws.column_dimensions[chr(64+i)].width = width
+
+    widths = {
+        "A": 24, "B": 14, "C": 10, "D": 12, "E": 22,
+        "F": 14, "G": 14, "H": 10, "I": 20, "J": 16,
+        "K": 18, "L": 30,
+    }
+    for column, width in widths.items():
+        ws.column_dimensions[column].width = width
 
     summary = wb.create_sheet("Souhrn")
     summary.append(["Položka", "Hodnota"])
     summary.append(["Počet uložených záznamů", ws.max_row - 1])
-    summary.append(["Nejnižší zaznamenaná cena (Kč)", min(x["price_czk"] for x in rows)])
+    summary.append([
+        "Nejnižší zaznamenaná cena (Kč)",
+        min(int(row["price_czk"]) for row in rows),
+    ])
     summary.append(["Nejnižší cena dnešní kontroly (Kč)", rows[0]["price_czk"]])
     summary.append(["Poslední kontrola (UTC)", now])
     summary.column_dimensions["A"].width = 34
     summary.column_dimensions["B"].width = 28
+
     wb.save(XLSX)
-    print(f'Best price: {rows[0]["price_czk"]} CZK, {rows[0]["origin"]} -> {rows[0]["destination"]}')
+
+    print(
+        f'Best price: {rows[0]["price_czk"]} CZK, '
+        f'{rows[0]["origin"]} -> {rows[0]["destination"]}, '
+        f'{rows[0]["outbound_date"]} to {rows[0]["return_date"]}'
+    )
+
 
 if __name__ == "__main__":
     main()
