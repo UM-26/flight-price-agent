@@ -21,7 +21,7 @@
   "currency": "CZK",
   "language": "cs",
   "country": "cz",
-  "stops": 1,
+  "stops": 2,
   "max_results": 50,
   "alert_price_czk": 12000,
   "max_layover_hours": 5
