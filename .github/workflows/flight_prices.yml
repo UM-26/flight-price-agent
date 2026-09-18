@@ -3,7 +3,7 @@ name: Flight price tracker
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 6 * * *"
+    - cron: "17 6 * * 1,3,5"
 
 permissions:
   contents: write
