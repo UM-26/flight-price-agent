@@ -1,0 +1,30 @@
+name: Flight price tracker
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  check-prices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Check flight prices
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+        run: python src/flight_agent.py
+      - name: Commit price history
+        run: |
+          git config user.name "flight-price-agent"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/prices.csv data/flight_prices.xlsx
+          git diff --cached --quiet || git commit -m "Update flight prices"
+          git push
