@@ -7,28 +7,44 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   check-prices:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - run: pip install -r requirements.txt
+
       - name: Smoke test Google Flights
         env:
-          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          SERPAPI_KEY: \${{ secrets.SERPAPI_KEY }}
         run: python src/test_google_flights.py
+
       - name: Check flight prices
         env:
-          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          SERPAPI_KEY: \${{ secrets.SERPAPI_KEY }}
         run: python src/flight_agent.py
-      - name: Commit price history
+
+      - name: Create GitHub alert
+        if: \${{ hashFiles('data/alert.md') != '' }}
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          gh issue create \
+            --title "🚨 New York: nová zajímavá cena letenek" \
+            --body-file data/alert.md
+          rm -f data/alert.md
+
+      - name: Commit price history and alert state
         run: |
           git config user.name "flight-price-agent"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/prices.csv data/flight_prices.xlsx
+          git add data/prices.csv data/flight_prices.xlsx data/alert_state.json
           git diff --cached --quiet || git commit -m "Update flight prices"
           git push
