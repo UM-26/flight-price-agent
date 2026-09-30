@@ -208,6 +208,88 @@ def append_rows(rows):
         writer.writerows(rows)
 
 
+def build_combinations(all_rows):
+    """
+    Build historical best observed 6-8 night combinations without API calls.
+
+    For each exact one-way itinerary/date, keep its lowest observed price.
+    Then combine outbound and return observations whose dates are 6, 7 or 8
+    nights apart. The result is a historical combination, not a live quote.
+    """
+    best = {}
+
+    for row in all_rows:
+        try:
+            price = int(row.get("price_czk", ""))
+            flight_date = row.get("flight_date", "")
+        except (TypeError, ValueError):
+            continue
+
+        if row.get("direction") not in {"OUTBOUND", "RETURN"} or not flight_date:
+            continue
+
+        key = (
+            row["direction"],
+            flight_date,
+            row.get("origin", ""),
+            row.get("destination", ""),
+            row.get("airline", ""),
+            row.get("flight_numbers", ""),
+        )
+
+        if key not in best or price < best[key]["price_czk"]:
+            item = dict(row)
+            item["price_czk"] = price
+            best[key] = item
+
+    outbound = list(item for item in best.values() if item["direction"] == "OUTBOUND")
+    returns = list(item for item in best.values() if item["direction"] == "RETURN")
+
+    by_return_date = {}
+    for row in returns:
+        by_return_date.setdefault(row["flight_date"], []).append(row)
+
+    combinations = []
+
+    for out in outbound:
+        try:
+            out_date = date.fromisoformat(out["flight_date"])
+        except ValueError:
+            continue
+
+        for nights in range(CFG["trip_length_min"], CFG["trip_length_max"] + 1):
+            return_date = out_date + timedelta(days=nights)
+            return_rows = by_return_date.get(return_date.isoformat(), [])
+
+            for ret in return_rows:
+                total = int(out["price_czk"]) + int(ret["price_czk"])
+                same_nyc_airport = out["destination"] == ret["origin"]
+
+                combinations.append({
+                    "odlet": out["flight_date"],
+                    "návrat": ret["flight_date"],
+                    "noci": nights,
+                    "celkem_czk": total,
+                    "odlet_z": out["origin"],
+                    "prilet_do_nyc": out["destination"],
+                    "navrat_z_nyc": ret["origin"],
+                    "prilet_do": ret["destination"],
+                    "cena_odlet_czk": int(out["price_czk"]),
+                    "cena_navrat_czk": int(ret["price_czk"]),
+                    "letec_odlet": out["airline"],
+                    "letec_navrat": ret["airline"],
+                    "prestupy_odlet": int(out.get("stops") or 0),
+                    "prestupy_navrat": int(ret.get("stops") or 0),
+                    "max_prestup_odlet_min": int(out.get("max_layover_minutes") or 0),
+                    "max_prestup_navrat_min": int(ret.get("max_layover_minutes") or 0),
+                    "poznamka": "" if same_nyc_airport else "Jiná NYC letiště pro přílet a odlet",
+                    "poznamka_typ": "Historicky nejnižší zaznamenané ceny pro dané jednosměrné itineráře",
+                })
+
+    combinations.sort(key=lambda row: row["celkem_czk"])
+    return combinations[:2000]
+
+
 def build_xlsx():
     fields = [
         "checked_at_utc",
@@ -275,6 +357,67 @@ def build_xlsx():
     summary.append(["Max. délka přestupu", f'{CFG["max_layover_hours"]} hodin'])
     summary.column_dimensions["A"].width = 34
     summary.column_dimensions["B"].width = 32
+
+    combinations = build_combinations(all_rows)
+    combo_ws = wb.create_sheet("Kombinace 6-8 nocí")
+    combo_fields = [
+        "odlet",
+        "návrat",
+        "noci",
+        "celkem_czk",
+        "odlet_z",
+        "prilet_do_nyc",
+        "navrat_z_nyc",
+        "prilet_do",
+        "cena_odlet_czk",
+        "cena_navrat_czk",
+        "letec_odlet",
+        "letec_navrat",
+        "prestupy_odlet",
+        "prestupy_navrat",
+        "max_prestup_odlet_min",
+        "max_prestup_navrat_min",
+        "poznamka",
+        "poznamka_typ",
+    ]
+    combo_ws.append(combo_fields)
+    for row in combinations:
+        combo_ws.append([row.get(field, "") for field in combo_fields])
+
+    combo_ws.freeze_panes = "A2"
+    combo_ws.auto_filter.ref = combo_ws.dimensions
+    combo_widths = {
+        "A": 14, "B": 14, "C": 8, "D": 14, "E": 10, "F": 15,
+        "G": 15, "H": 10, "I": 16, "J": 17, "K": 22, "L": 22,
+        "M": 16, "N": 17, "O": 23, "P": 24, "Q": 34, "R": 55,
+    }
+    for column, width in combo_widths.items():
+        combo_ws.column_dimensions[column].width = width
+
+    combo_summary = wb.create_sheet("Jak číst kombinace")
+    combo_summary.append(["Informace", "Vysvětlení"])
+    combo_summary.append([
+        "Co obsahuje list",
+        "Kombinace historicky zaznamenaných jednosměrných letů pro 6, 7 nebo 8 nocí.",
+    ])
+    combo_summary.append([
+        "Cena",
+        "Celková cena = zaznamenaná cena odletu + zaznamenaná cena návratu pro 2 dospělé a 1 dítě.",
+    ])
+    combo_summary.append([
+        "Důležité",
+        "Jde o historicky pozorované ceny, nikoli o aktuální nabídku dostupnou k okamžité rezervaci.",
+    ])
+    combo_summary.append([
+        "NYC letiště",
+        "Pokud je přílet do jiného NYC letiště než odlet zpět, je to označeno v poznámce.",
+    ])
+    combo_summary.append([
+        "Řazení",
+        "Nejnižší historicky zaznamenané celkové kombinace jsou nahoře.",
+    ])
+    combo_summary.column_dimensions["A"].width = 22
+    combo_summary.column_dimensions["B"].width = 100
 
     wb.save(XLSX)
 
