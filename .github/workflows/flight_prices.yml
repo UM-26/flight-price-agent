@@ -23,18 +23,18 @@ jobs:
 
       - name: Smoke test Google Flights
         env:
-          SERPAPI_KEY: \${{ secrets.SERPAPI_KEY }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
         run: python src/test_google_flights.py
 
       - name: Check flight prices
         env:
-          SERPAPI_KEY: \${{ secrets.SERPAPI_KEY }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
         run: python src/flight_agent.py
 
       - name: Create GitHub alert
-        if: \${{ hashFiles('data/alert.md') != '' }}
+        if: ${{ hashFiles('data/alert.md') != '' }}
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh issue create \
             --title "🚨 New York: nová zajímavá cena letenek" \
