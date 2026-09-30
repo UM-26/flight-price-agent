@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+
 import requests
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,11 +15,10 @@ params = {
     "departure_id": ",".join(CFG["departure_airports"]),
     "arrival_id": ",".join(CFG["arrival_airports"]),
     "outbound_date": "2027-05-12",
-    "return_date": "2027-05-22",
-    "type": "1",
+    "type": "2",
     "adults": CFG["adults"],
     "children": CFG["children"],
-    "infants_in_seat": 0,
+    "infants_on_lap": CFG.get("infants_on_lap", 0),
     "travel_class": "1",
     "currency": CFG["currency"],
     "hl": CFG["language"],
@@ -28,9 +28,14 @@ params = {
     "sort_by": "2",
 }
 
-print("Testing Google Flights...")
-print("Route:", ",".join(CFG["departure_airports"]), "->", ",".join(CFG["arrival_airports"]))
-print("Dates: 2027-05-12 -> 2027-05-22")
+print("Testing Google Flights one-way search...")
+print(
+    "Route:",
+    ",".join(CFG["departure_airports"]),
+    "->",
+    ",".join(CFG["arrival_airports"]),
+)
+print("Date: 2027-05-12")
 print("Passengers:", CFG["adults"], "adults +", CFG["children"], "child")
 print("Filters: max 1 stop, max", CFG["max_layover_hours"], "hours layover")
 
@@ -52,11 +57,13 @@ print("Total itineraries:", len(all_flights))
 
 if not all_flights:
     print("Response keys:", sorted(data.keys()))
-    raise RuntimeError("Google Flights returned no matching itineraries.")
+    raise RuntimeError("Google Flights returned no matching one-way itineraries.")
+
 
 def price(item):
     value = item.get("price")
     return value if isinstance(value, (int, float)) else 10**12
+
 
 all_flights.sort(key=price)
 
@@ -68,30 +75,32 @@ for i, item in enumerate(all_flights[:10], 1):
         f"duration={item.get('total_duration', item.get('duration', '?'))}"
     )
 
-    for direction in ("outbound", "return"):
-        part = item.get(direction) or {}
-        for segment in part.get("flights", [])[:5]:
-            print(
-                "   ",
-                segment.get("departure_airport", {}).get("id", "?"),
-                "->",
-                segment.get("arrival_airport", {}).get("id", "?"),
-                "|",
-                segment.get("airline", "?"),
-                "|",
-                segment.get("departure_airport", {}).get("time", "?"),
-                "->",
-                segment.get("arrival_airport", {}).get("time", "?"),
-            )
+    flights = item.get("flights") or []
+    for segment in flights[:5]:
+        print(
+            "   ",
+            segment.get("departure_airport", {}).get("id", "?"),
+            "->",
+            segment.get("arrival_airport", {}).get("id", "?"),
+            "|",
+            segment.get("airline", "?"),
+            "|",
+            segment.get("departure_airport", {}).get("time", "?"),
+            "->",
+            segment.get("arrival_airport", {}).get("time", "?"),
+        )
 
     layovers = item.get("layovers") or []
     if layovers:
-        print("    layovers:", [
-            {
-                "airport": x.get("name"),
-                "duration": x.get("duration"),
-            }
-            for x in layovers
-        ])
+        print(
+            "    layovers:",
+            [
+                {
+                    "airport": x.get("name"),
+                    "duration": x.get("duration"),
+                }
+                for x in layovers
+            ],
+        )
 
-print("\nTEST PASSED: Google Flights returned usable itineraries.")
+print("\nTEST PASSED: Google Flights returned usable one-way itineraries.")
