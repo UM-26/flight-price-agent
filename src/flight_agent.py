@@ -6,11 +6,14 @@ from pathlib import Path
 
 import requests
 from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
 
 ROOT = Path(__file__).resolve().parents[1]
 CFG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
 CSV = ROOT / "data" / "prices.csv"
 XLSX = ROOT / "data" / "flight_prices.xlsx"
+ALERT_STATE = ROOT / "data" / "alert_state.json"
+ALERT_FILE = ROOT / "data" / "alert.md"
 API = "https://serpapi.com/search.json"
 
 ORIGINS = CFG["departure_airports"]
@@ -242,8 +245,8 @@ def build_combinations(all_rows):
             item["price_czk"] = price
             best[key] = item
 
-    outbound = list(item for item in best.values() if item["direction"] == "OUTBOUND")
-    returns = list(item for item in best.values() if item["direction"] == "RETURN")
+    outbound = [item for item in best.values() if item["direction"] == "OUTBOUND"]
+    returns = [item for item in best.values() if item["direction"] == "RETURN"]
 
     by_return_date = {}
     for row in returns:
@@ -290,6 +293,110 @@ def build_combinations(all_rows):
     return combinations[:2000]
 
 
+def combo_key(row):
+    return (
+        row["odlet"],
+        row["návrat"],
+        row["odlet_z"],
+        row["prilet_do_nyc"],
+        row["navrat_z_nyc"],
+        row["prilet_do"],
+        row["noci"],
+    )
+
+
+def load_alert_state():
+    if not ALERT_STATE.exists():
+        return {}
+    try:
+        return json.loads(ALERT_STATE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def build_alert(combinations):
+    """
+    Compare the current historical best with the previous best.
+
+    First run creates a baseline and does not alert. Later runs alert when:
+    - the overall best combination gets cheaper by at least the configured
+      absolute or percentage drop, or
+    - the best price crosses the configured absolute alert threshold.
+    """
+    if not combinations:
+        return None
+
+    best = combinations[0]
+    state = load_alert_state()
+    previous_price = state.get("best_price_czk")
+
+    current_price = int(best["celkem_czk"])
+    drop_czk = 0
+    drop_percent = 0.0
+    alert_reason = []
+
+    if isinstance(previous_price, (int, float)) and current_price < previous_price:
+        drop_czk = int(previous_price - current_price)
+        drop_percent = (drop_czk / previous_price) * 100 if previous_price else 0
+        if drop_czk >= CFG.get("alert_drop_czk", 1000):
+            alert_reason.append(f"pokles o {drop_czk:,} Kč".replace(",", " "))
+        if drop_percent >= CFG.get("alert_drop_percent", 5):
+            alert_reason.append(f"pokles o {drop_percent:.1f} %")
+
+    threshold = CFG.get("alert_price_czk")
+    if isinstance(threshold, (int, float)) and current_price <= threshold:
+        if not state.get("threshold_alerted", False):
+            alert_reason.append(f"cena je pod hranicí {int(threshold):,} Kč".replace(",", " "))
+
+    state_update = {
+        "best_price_czk": current_price,
+        "best_key": list(combo_key(best)),
+        "last_checked_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "threshold_alerted": bool(
+            isinstance(threshold, (int, float)) and current_price <= threshold
+        ),
+    }
+
+    ALERT_STATE.parent.mkdir(parents=True, exist_ok=True)
+    ALERT_STATE.write_text(
+        json.dumps(state_update, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    if not alert_reason:
+        if not previous_price:
+            print(f"Alert baseline created: {current_price} CZK")
+        return None
+
+    reason = " a ".join(dict.fromkeys(alert_reason))
+    previous_text = (
+        f"{previous_price:,} Kč".replace(",", " ")
+        if isinstance(previous_price, (int, float))
+        else "není k dispozici"
+    )
+
+    body = f"""# 🚨 Nová zajímavá cena do New Yorku
+
+**Důvod:** {reason}
+
+## Nejlepší nalezená kombinace
+
+- **Celkem:** {current_price:,} Kč
+- **Odlet:** {best["odlet"]} z {best["odlet_z"]} → {best["prilet_do_nyc"]}
+- **Návrat:** {best["návrat"]} z {best["navrat_z_nyc"]} → {best["prilet_do"]}
+- **Pobyt:** {best["noci"]} nocí
+- **Odlet:** {best["cena_odlet_czk"]:,} Kč, {best["letec_odlet"]}, {best["prestupy_odlet"]} přestup(y)
+- **Návrat:** {best["cena_navrat_czk"]:,} Kč, {best["letec_navrat"]}, {best["prestupy_navrat"]} přestup(y)
+- **Předchozí nejlepší cena:** {previous_text}
+
+> ⚠️ Toto je historicky zaznamenaná kombinace. Před rezervací je nutné ověřit aktuální dostupnost a cenu v Google Flights.
+
+**Kontrola:** {state_update["last_checked_at_utc"]}
+"""
+    ALERT_FILE.write_text(body, encoding="utf-8")
+    return body
+
+
 def build_xlsx():
     fields = [
         "checked_at_utc",
@@ -312,14 +419,60 @@ def build_xlsx():
         with CSV.open("r", encoding="utf-8", newline="") as f:
             all_rows = list(csv.DictReader(f))
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Historie letů"
-    ws.append(fields)
+    combinations = build_combinations(all_rows)
 
+    wb = Workbook()
+    dashboard = wb.active
+    dashboard.title = "Přehled"
+
+    dashboard["A1"] = "✈️ HLÍDAČ NEW YORKU"
+    dashboard["A1"].font = Font(size=18, bold=True)
+    dashboard.merge_cells("A1:H1")
+
+    dashboard["A3"] = "Nejlepší historicky zaznamenaná kombinace"
+    dashboard["A3"].font = Font(size=13, bold=True)
+
+    if combinations:
+        best = combinations[0]
+        dashboard["A4"] = "Celkem"
+        dashboard["B4"] = best["celkem_czk"]
+        dashboard["B4"].font = Font(size=16, bold=True)
+        dashboard["A5"] = "Termín"
+        dashboard["B5"] = f'{best["odlet"]} → {best["návrat"]} ({best["noci"]} nocí)'
+        dashboard["A6"] = "Trasa"
+        dashboard["B6"] = f'{best["odlet_z"]} → {best["prilet_do_nyc"]} / {best["navrat_z_nyc"]} → {best["prilet_do"]}'
+        dashboard["A7"] = "Let tam"
+        dashboard["B7"] = f'{best["cena_odlet_czk"]} Kč | {best["letec_odlet"]} | {best["prestupy_odlet"]} přestup(y)'
+        dashboard["A8"] = "Let zpět"
+        dashboard["B8"] = f'{best["cena_navrat_czk"]} Kč | {best["letec_navrat"]} | {best["prestupy_navrat"]} přestup(y)'
+        dashboard["A10"] = "Důležité"
+        dashboard["B10"] = "Cena je historicky pozorovaná kombinace, nikoli živá nabídka."
+    else:
+        dashboard["A4"] = "Zatím není dost dat pro kombinaci 6–8 nocí."
+
+    dashboard["A12"] = "Co hlídám"
+    dashboard["A12"].font = Font(size=13, bold=True)
+    dashboard["A13"] = "Cestující"
+    dashboard["B13"] = f'{CFG["adults"]} dospělí + {CFG["children"]} dítě'
+    dashboard["A14"] = "Odlety"
+    dashboard["B14"] = ", ".join(ORIGINS)
+    dashboard["A15"] = "New York"
+    dashboard["B15"] = ", ".join(NYC)
+    dashboard["A16"] = "Pobyt"
+    dashboard["B16"] = f'{CFG["trip_length_min"]}–{CFG["trip_length_max"]} nocí'
+    dashboard["A17"] = "Přestupy"
+    dashboard["B17"] = f'0–1, max. {CFG["max_layover_hours"]} h'
+    dashboard["A18"] = "Období"
+    dashboard["B18"] = f'{CFG["outbound_start"]} → {CFG["outbound_end"]}'
+
+    dashboard.column_dimensions["A"].width = 38
+    dashboard.column_dimensions["B"].width = 72
+    dashboard.freeze_panes = "A3"
+
+    ws = wb.create_sheet("Historie letů")
+    ws.append(fields)
     for row in all_rows:
         ws.append([row.get(field, "") for field in fields])
-
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
 
@@ -330,62 +483,38 @@ def build_xlsx():
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
 
-    today_rows = [
-        row for row in all_rows
-        if row.get("checked_at_utc", "").startswith(date.today().isoformat())
-    ]
-
     summary = wb.create_sheet("Souhrn")
     summary.append(["Položka", "Hodnota"])
     summary.append(["Počet uložených letů", len(all_rows)])
 
     if all_rows:
         prices = [int(row["price_czk"]) for row in all_rows if row.get("price_czk")]
-        summary.append(["Nejnižší zaznamenaná cena (Kč)", min(prices)])
+        summary.append(["Nejnižší zaznamenaná cena jednosměrně (Kč)", min(prices)])
 
-    if today_rows:
-        today_prices = [int(row["price_czk"]) for row in today_rows]
-        summary.append(["Nejnižší cena dnešní kontroly (Kč)", min(today_prices)])
-    else:
-        summary.append(["Nejnižší cena dnešní kontroly (Kč)", ""])
-
+    summary.append(["Nejlepší historická kombinace (Kč)", combinations[0]["celkem_czk"] if combinations else ""])
+    summary.append(["Počet kombinací 6–8 nocí", len(combinations)])
     summary.append(["Poslední kontrola (UTC)", datetime.now(timezone.utc).isoformat(timespec="seconds")])
     summary.append(["Cíl cesty", "New York"])
-    summary.append(["Délka pobytu", "6-8 nocí"])
+    summary.append(["Délka pobytu", "6–8 nocí"])
     summary.append(["Odletové období", f'{CFG["outbound_start"]} až {CFG["outbound_end"]}'])
     summary.append(["Přestupy", "0 nebo 1"])
     summary.append(["Max. délka přestupu", f'{CFG["max_layover_hours"]} hodin'])
-    summary.column_dimensions["A"].width = 34
-    summary.column_dimensions["B"].width = 32
+    summary.column_dimensions["A"].width = 42
+    summary.column_dimensions["B"].width = 34
 
-    combinations = build_combinations(all_rows)
     combo_ws = wb.create_sheet("Kombinace 6-8 nocí")
     combo_fields = [
-        "odlet",
-        "návrat",
-        "noci",
-        "celkem_czk",
-        "odlet_z",
-        "prilet_do_nyc",
-        "navrat_z_nyc",
-        "prilet_do",
-        "cena_odlet_czk",
-        "cena_navrat_czk",
-        "letec_odlet",
-        "letec_navrat",
-        "prestupy_odlet",
-        "prestupy_navrat",
-        "max_prestup_odlet_min",
-        "max_prestup_navrat_min",
-        "poznamka",
-        "poznamka_typ",
+        "odlet", "návrat", "noci", "celkem_czk", "odlet_z", "prilet_do_nyc",
+        "navrat_z_nyc", "prilet_do", "cena_odlet_czk", "cena_navrat_czk",
+        "letec_odlet", "letec_navrat", "prestupy_odlet", "prestupy_navrat",
+        "max_prestup_odlet_min", "max_prestup_navrat_min", "poznamka", "poznamka_typ",
     ]
     combo_ws.append(combo_fields)
     for row in combinations:
         combo_ws.append([row.get(field, "") for field in combo_fields])
-
     combo_ws.freeze_panes = "A2"
     combo_ws.auto_filter.ref = combo_ws.dimensions
+
     combo_widths = {
         "A": 14, "B": 14, "C": 8, "D": 14, "E": 10, "F": 15,
         "G": 15, "H": 10, "I": 16, "J": 17, "K": 22, "L": 22,
@@ -463,12 +592,31 @@ def main():
     append_rows(rows)
     build_xlsx()
 
+    all_rows = []
+    with CSV.open("r", encoding="utf-8", newline="") as f:
+        all_rows = list(csv.DictReader(f))
+
+    combinations = build_combinations(all_rows)
+    alert = build_alert(combinations)
+
     print(f"Saved {len(rows)} flight results.")
     print(
         f'Best one-way: {rows[0]["price_czk"]} CZK | '
         f'{rows[0]["origin"]} -> {rows[0]["destination"]} | '
         f'{rows[0]["flight_date"]}'
     )
+
+    if combinations:
+        print(
+            f'Best historical 6-8 night combination: '
+            f'{combinations[0]["celkem_czk"]} CZK | '
+            f'{combinations[0]["odlet"]} -> {combinations[0]["návrat"]}'
+        )
+
+    if alert:
+        print("PRICE ALERT: new interesting combination detected.")
+    else:
+        print("No new price alert.")
 
 
 if __name__ == "__main__":
