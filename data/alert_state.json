@@ -1,14 +1,14 @@
 {
-  "best_price_czk": 50221,
+  "best_price_czk": 45900,
   "best_key": [
-    "2027-04-24",
-    "2027-04-30",
+    "2027-04-29",
+    "2027-05-07",
     "PRG",
     "JFK",
     "JFK",
-    "KRK",
-    6
+    "PRG",
+    8
   ],
-  "last_checked_at_utc": "2026-10-05T14:54:26+00:00",
+  "last_checked_at_utc": "2026-10-07T13:34:29+00:00",
   "threshold_alerted": false
 }
